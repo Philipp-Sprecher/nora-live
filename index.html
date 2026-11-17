@@ -177,15 +177,55 @@
   .browser-body {
     flex: 1;
     position: relative;
-    background: #FFFFFF;
+    background: #09192C;
     overflow: hidden;
   }
 
-  .browser-body iframe {
+  .browser-viewport {
     width: 100%;
     height: 100%;
-    border: none;
-    display: block;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scroll-behavior: smooth;
+    position: relative;
+  }
+  .browser-viewport::-webkit-scrollbar {
+    width: 6px;
+  }
+  .browser-viewport::-webkit-scrollbar-thumb {
+    background: rgba(215, 203, 75, 0.45);
+    border-radius: 3px;
+  }
+
+  .browser-preview-img {
+    width: 100%;
+    height: auto;
+    display: none;
+  }
+
+  .browser-loader {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    color: #E9EEF4;
+    font-family: "Inter", sans-serif;
+    font-size: 16px;
+    background: linear-gradient(145deg, #0B2038 0%, #08182B 100%);
+  }
+  .browser-spinner {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    border: 3px solid rgba(215, 203, 75, 0.22);
+    border-top-color: #D7CB4B;
+    animation: spinLoader 0.9s linear infinite;
+  }
+  @keyframes spinLoader {
+    to { transform: rotate(360deg); }
   }
 
   .info-card-body {
@@ -474,7 +514,13 @@
         <div class="browser-url" id="browser-url">https://www.insign.ch</div>
       </div>
       <div class="browser-body" id="browser-body">
-        <iframe id="browser-iframe" src="about:blank"></iframe>
+        <div class="browser-loader" id="browser-loader">
+          <div class="browser-spinner"></div>
+          <div id="browser-loader-text">Lade Live-Ansicht der Website…</div>
+        </div>
+        <div class="browser-viewport" id="browser-viewport">
+          <img class="browser-preview-img" id="browser-preview-img" alt="Website Live Preview" crossorigin="anonymous" />
+        </div>
       </div>
       <div class="info-card-body" id="info-card-body">
         <h2 id="info-card-title">Zusammenfassung</h2>
@@ -531,7 +577,10 @@
     const toastEl = document.getElementById("chat-toast");
     const browserUrlEl = document.getElementById("browser-url");
     const browserBodyEl = document.getElementById("browser-body");
-    const browserIframeEl = document.getElementById("browser-iframe");
+    const browserViewportEl = document.getElementById("browser-viewport");
+    const browserPreviewImgEl = document.getElementById("browser-preview-img");
+    const browserLoaderEl = document.getElementById("browser-loader");
+    const browserLoaderTextEl = document.getElementById("browser-loader-text");
     const infoCardBodyEl = document.getElementById("info-card-body");
     const infoCardTitleEl = document.getElementById("info-card-title");
     const infoCardListEl = document.getElementById("info-card-list");
@@ -576,9 +625,32 @@
       browserBodyEl.style.display = "block";
       infoCardBodyEl.style.display = "none";
       browserUrlEl.textContent = title ? (title + " — " + cleanUrl) : cleanUrl;
-      browserIframeEl.src = cleanUrl;
+      browserLoaderTextEl.textContent = "Lade Live-Ansicht von " + cleanUrl + " …";
+      browserLoaderEl.style.display = "flex";
+      browserPreviewImgEl.style.display = "none";
+      browserViewportEl.scrollTop = 0;
+
+      // Render high-resolution full-height visual capture (bypasses X-Frame-Options / CSP frame-ancestors blocks)
+      const renderUrl = "https://image.thum.io/get/width/1280/crop/2200/noanimate/" + cleanUrl;
+      browserPreviewImgEl.onload = () => {
+        browserLoaderEl.style.display = "none";
+        browserPreviewImgEl.style.display = "block";
+      };
+      browserPreviewImgEl.src = renderUrl;
+
       showToast("🌐 <strong>Geöffnet:</strong> " + cleanUrl, 10000);
       relayActionToHost({ type: "send_chat_message", message: cleanUrl });
+    }
+
+    function scrollWebsiteOnScreen(direction) {
+      const dir = String(direction || "down").toLowerCase();
+      if (dir === "top") {
+        browserViewportEl.scrollTo({ top: 0, behavior: "smooth" });
+      } else if (dir === "up") {
+        browserViewportEl.scrollBy({ top: -420, behavior: "smooth" });
+      } else {
+        browserViewportEl.scrollBy({ top: 420, behavior: "smooth" });
+      }
     }
 
     function showInfoCard(title, items) {
@@ -597,7 +669,8 @@
 
     function closeScreenView() {
       document.body.classList.remove("split-view");
-      browserIframeEl.src = "about:blank";
+      browserPreviewImgEl.src = "";
+      browserPreviewImgEl.style.display = "none";
     }
 
     let pendingStandardSwitch = false;
@@ -741,12 +814,13 @@
           "- Sprich stets mit einer sanften, warmen, ruhigen und angenehmen Stimme (standardmässig per «Du», ausser jemand siezt dich explizit). Halte deine gesprochenen Antworten im Call kurz und prägnant (1 bis 3 Sätze).",
           "STRIKTE SCHREIB-REGEL (SCHRIFTLICH AUSNAHMSLOS ECHTES SCHRIFTDEUTSCH): Alles, was du schriftlich verfasst – insbesondere Nachrichten im Google-Meet-Chat (send_chat_message) sowie Titel und Stichpunkte auf Info-Karten (show_info_card) – MUSS AUSNAHMSLOS in korrektem, sauberem Schweizer Schriftdeutsch (Hochdeutsch mit «ss» statt «ß») geschrieben werden, selbst wenn du gerade mündlich im Dialekt sprichst!",
           "GOLDENE MEETING-REGEL (WAKE-WORD «NORA»): Du hörst das Gespräch aller Teilnehmenden im Raum mit. Wenn sich die Teilnehmenden untereinander unterhalten und dich NICHT mit «Nora» ansprechen, bleibst du KOMPLETT STILL (gib keinen einzigen Ton aus!). Antworte oder handle NUR DANN, wenn dich jemand mit «Nora» anspricht oder dir eine direkte Anweisung gibt!",
-          "DEINE 5 WERKZEUGE IM CALL:",
+          "DEINE 6 WERKZEUGE IM CALL:",
           "1. send_chat_message: Wenn jemand sagt «Nora, schreib/post den Link von ... in den Chat» oder «Nora, kannst du ... in den Chat schreiben?», rufe SOFORT send_chat_message auf (immer in sauberem Schriftdeutsch).",
           "2. open_website_on_screen: Wenn jemand sagt «Nora, öffne/zeig mal die Website ...», rufe SOFORT open_website_on_screen auf.",
-          "3. show_info_card: Wenn jemand sagt «Nora, zeig unsere Punkte/Zusammenfassung auf dem Bildschirm», rufe show_info_card auf (immer in sauberem Schriftdeutsch).",
-          "4. close_screen_view: Wenn jemand sagt «Nora, schliesse das Fenster / die Website wieder», rufe close_screen_view auf.",
-          "5. switch_to_standard_mode: Wenn jemand sagt «Nora, wechsle in den Standardmodus», «Nora, geh zurück in den normalen Modus», «Nora, schalte den Live-Modus aus» oder «Nora, mach nur noch Notizen im Hintergrund», rufe SOFORT das Tool switch_to_standard_mode auf und verabschiede dich mit einem kurzen Satz in den ruhigen Standard-Notizmodus.",
+          "3. scroll_website: Wenn jemand sagt «Nora, scroll auf der Website etwas nach unten / nach oben», rufe scroll_website auf.",
+          "4. show_info_card: Wenn jemand sagt «Nora, zeig unsere Punkte/Zusammenfassung auf dem Bildschirm», rufe show_info_card auf (immer in sauberem Schriftdeutsch).",
+          "5. close_screen_view: Wenn jemand sagt «Nora, schliesse das Fenster / die Website wieder», rufe close_screen_view auf.",
+          "6. switch_to_standard_mode: Wenn jemand sagt «Nora, wechsle in den Standardmodus», «Nora, geh zurück in den normalen Modus», «Nora, schalte den Live-Modus aus» oder «Nora, mach nur noch Notizen im Hintergrund», rufe SOFORT das Tool switch_to_standard_mode auf und verabschiede dich mit einem kurzen Satz in den ruhigen Standard-Notizmodus.",
           BRIEFING ? ("Kontext zu diesem Meeting: " + BRIEFING) : ""
         ].filter(Boolean).join("\n");
 
@@ -787,6 +861,17 @@
                       title: { type: "STRING", description: "Kurzer Titel der Website" }
                     },
                     required: ["url"]
+                  }
+                },
+                {
+                  name: "scroll_website",
+                  description: "Scrollt die aktuell geöffnete Website auf Noras Bildschirm nach unten, nach oben oder ganz an den Anfang.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      direction: { type: "STRING", description: "Scroll-Richtung: 'down' (nach unten), 'up' (nach oben) oder 'top' (ganz nach oben)" }
+                    },
+                    required: ["direction"]
                   }
                 },
                 {
@@ -868,6 +953,9 @@
             } else if (fc.name === "open_website_on_screen") {
               openWebsiteOnScreen(args.url, args.title);
               responses.push({ id: fc.id, name: fc.name, response: { result: "Website " + args.url + " ist jetzt live auf deinem Bildschirm sichtbar und der Link steht im Chat." } });
+            } else if (fc.name === "scroll_website") {
+              scrollWebsiteOnScreen(args.direction);
+              responses.push({ id: fc.id, name: fc.name, response: { result: "Website wurde gescrollt." } });
             } else if (fc.name === "show_info_card") {
               showInfoCard(args.title, args.items);
               responses.push({ id: fc.id, name: fc.name, response: { result: "Info-Karte wird auf dem Bildschirm angezeigt." } });
