@@ -460,7 +460,7 @@
 
   <div class="mode-pill">
     <span class="mode-dot"></span>
-    <span>⚡ Showcase-Modus · Live AI Agent (Interaktiv)</span>
+    <span>⚡ Live-Modus · AI Meeting Agent (Interaktiv)</span>
   </div>
 
   <div class="top-brand">
@@ -486,7 +486,7 @@
       <div class="avatar-wrap">
         <div class="avatar-pulse-halo"></div>
         <div class="avatar-circle">
-          <video id="video-idle" src="https://v3b.fal.media/files/b/0ab2d8c5/_SEXcmvBadQ1nxZd7RiPz_nora-idle-loop.mp4" autoplay loop muted playsinline crossorigin="anonymous"></video>
+          <video id="video-idle" src="https://philipp-sprecher.github.io/nora-live/nora-idle-calm.mp4" autoplay loop muted playsinline crossorigin="anonymous"></video>
           <video id="video-talking" src="https://v3b.fal.media/files/b/0ab2da5f/WpUHmmNOIS134ULWFWoDV_nora-talking-loop.mp4" autoplay loop muted playsinline crossorigin="anonymous"></video>
         </div>
         <div class="wave-pill">
@@ -499,7 +499,7 @@
         </div>
       </div>
 
-      <div class="badge"><span class="dot"></span> <span id="badge-text">Live Voice & Action Agent · Bereit</span></div>
+      <div class="badge"><span class="dot"></span> <span id="badge-text">Live-Modus · Bereit auf Zuruf</span></div>
       <h1>Nora <span>· insign AI</span></h1>
       <div class="yellow-bar"></div>
       <p class="sub" id="status-text">Hört live mit · Sprich mich im Call einfach mit «Nora, ...» an</p>
@@ -519,6 +519,10 @@
     const GIST_ID = getParam("g");
     const GH_TOKEN = getParam("gt");
     const VOICE_NAME = getParam("v") || "Leda";
+    const TTS_ENGINE = (getParam("tts") || "gemini").toLowerCase();
+    const FAL_KEY = getParam("fk") || "";
+    const ELEVEN_VOICE = getParam("ev") || "Aria";
+    const ELEVEN_MODEL = getParam("em") || "turbo-v2.5";
     const GREET_ON_START = getParam("greet") === "1" || getParam("play") === "greeting";
     const BRIEFING = getParam("briefing") || "";
 
@@ -596,10 +600,29 @@
       browserIframeEl.src = "about:blank";
     }
 
-    // --- Audio Playback Queue (24kHz PCM from Gemini Live) ---
+    let pendingStandardSwitch = false;
+    function triggerSwitchToStandardMode() {
+      if (pendingStandardSwitch) return;
+      pendingStandardSwitch = true;
+      showToast("🔵 <strong>Modus-Wechsel:</strong> Wechsle in den Standard-Modus (Nur Notizen)...", 8000);
+      relayActionToHost({ type: "switch_to_standard_mode" });
+      const checkDone = setInterval(() => {
+        if (!isNoraSpeaking() && (Date.now() - lastSpeakEndMs > 600)) {
+          clearInterval(checkDone);
+          window.location.href = "https://philipp-sprecher.github.io/nora-live/standard.html";
+        }
+      }, 250);
+      setTimeout(() => {
+        clearInterval(checkDone);
+        window.location.href = "https://philipp-sprecher.github.io/nora-live/standard.html";
+      }, 5500);
+    }
+
+    // --- Audio Playback Queue (24kHz PCM from Gemini Live or decoded MP3 from ElevenLabs) ---
     const playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
     let nextPlayTime = 0;
     let lastSpeakEndMs = 0;
+    let elevenTranscriptBuffer = "";
 
     function isNoraSpeaking() {
       return playCtx.currentTime < nextPlayTime - 0.02;
@@ -609,13 +632,13 @@
       if (isNoraSpeaking()) {
         if (!document.body.classList.contains("speaking")) {
           document.body.classList.add("speaking");
-          badgeEl.textContent = "Nora spricht · Live AI";
+          badgeEl.textContent = "Live-Modus · Nora spricht";
         }
         lastSpeakEndMs = Date.now();
       } else {
         if (document.body.classList.contains("speaking")) {
           document.body.classList.remove("speaking");
-          badgeEl.textContent = "AI Meeting Agent · Live";
+          badgeEl.textContent = "Live-Modus · Bereit auf Zuruf";
         }
       }
     }, 80);
@@ -643,6 +666,45 @@
       nextPlayTime = startAt + buf.duration;
     }
 
+    async function speakWithElevenLabs(rawText) {
+      const clean = String(rawText || "").trim();
+      if (!clean || !FAL_KEY) return;
+      try {
+        const useV4 = ELEVEN_MODEL.includes("v4");
+        const spokenText = useV4
+          ? clean.replace(/IN-sain|insign/gi, "/ˈɪn.saɪn/")
+          : clean.replace(/insign/gi, "IN-sain");
+        const endpoint = "https://fal.run/fal-ai/elevenlabs/tts/" + ELEVEN_MODEL;
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            Authorization: "Key " + FAL_KEY,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            text: spokenText,
+            voice: ELEVEN_VOICE,
+            stability: 0.55,
+            similarity_boost: 0.78
+          })
+        });
+        const data = await res.json();
+        if (data && data.audio && data.audio.url) {
+          const audioRes = await fetch(data.audio.url);
+          const arrBuf = await audioRes.arrayBuffer();
+          const audioBuf = await playCtx.decodeAudioData(arrBuf);
+          const src = playCtx.createBufferSource();
+          src.buffer = audioBuf;
+          src.connect(playCtx.destination);
+          const startAt = Math.max(playCtx.currentTime + 0.02, nextPlayTime);
+          src.start(startAt);
+          nextPlayTime = startAt + audioBuf.duration;
+        }
+      } catch (err) {
+        console.error("ElevenLabs TTS error:", err);
+      }
+    }
+
     function floatTo16BitPcmBase64(float32Array) {
       const buf = new ArrayBuffer(float32Array.length * 2);
       const view = new DataView(buf);
@@ -664,6 +726,7 @@
         return;
       }
 
+      const useElevenLabs = TTS_ENGINE === "elevenlabs" && Boolean(FAL_KEY);
       const wsUrl = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=" + encodeURIComponent(GEMINI_KEY);
       const ws = new WebSocket(wsUrl);
 
@@ -672,85 +735,101 @@
           "Du bist Nora (Nora · insign AI), die intelligente Echtzeit-Meeting-Assistentin der Schweizer Digitalagentur insign gmbh (Villa Bianchi, Brunnenstrasse 27, 8610 Uster, www.insign.ch).",
           "WICHTIGE AUSSPRACHE-REGEL: Sprich den Firmennamen «insign» IMMER englisch und auf der ERSTEN Silbe betont als «IN-sain» aus (niemals deutsch als «in-siegn»!).",
           "Du nimmst live an einem Google-Meet-Videocall teil. Häufige Teilnehmende von insign sind Philipp Sprecher (CEO), Martin «Bachi» Bachmann (CTO) und Angelika «Angie» Dirven.",
-          "STIMME & GESPROCHENE SPRACHE: Sprich stets mit einer sanften, warmen, ruhigen und angenehmen Stimme. Standardmässig sprichst du gepflegtes, natürliches Schriftdeutsch / Schweizer Hochdeutsch (gerne «Grüezi» zur Begrüssung, standardmässig per «Du», ausser jemand siezt dich explizit). Wenn dich jemand auf Schweizerdeutsch anspricht oder sich wünscht, dass du Schweizerdeutsch redest, darfst du beim Sprechen gerne sympathisches Schweizerdeutsch (Zürichdeutsch / Ostschweizer Mundart) sprechen. Halte deine Antworten im Call prägnant (1 bis 3 Sätze).",
-          "STRIKTE SCHREIB-REGEL (IMMER ECHTES SCHRIFTDEUTSCH): Alles, was du schriftlich verfasst – insbesondere Nachrichten im Google-Meet-Chat (send_chat_message) sowie Titel und Stichpunkte auf Info-Karten (show_info_card) – MUSS AUSNAHMSLOS in korrektem, sauberem Schweizer Schriftdeutsch (Hochdeutsch mit «ss» statt «ß») geschrieben werden, niemals in Mundart!",
+          "VERBINDLICHE SPRACH-REGEL (IMMER IN SCHRIFTDEUTSCH STARTEN, DIALEKT NUR AUF EXPLIZITE AUFFORDERUNG):",
+          "- Du startest IMMER in gepflegtem, klarem, natürlichem Schriftdeutsch (Hochdeutsch) und antwortest standardmässig IMMER auf Schriftdeutsch – SELBST DANN, wenn die Meeting-Teilnehmenden mit dir oder untereinander Schweizerdeutsch / Mundart sprechen!",
+          "- Wechsle beim Sprechen NUR DANN ins Schweizerdeutsche (Zürichdeutsch / Ostschweizer Mundart), wenn dich jemand im Call EXPLIZIT dazu auffordert (z.B. «Nora, sprich bitte Schweizerdeutsch», «Nora, red Mundart» oder «Nora, wechsle in den Dialekt»). Wenn du später gebeten wirst, wieder Schriftdeutsch / Hochdeutsch zu sprechen, wechsle sofort wieder ins Schriftdeutsche zurück.",
+          "- Sprich stets mit einer sanften, warmen, ruhigen und angenehmen Stimme (standardmässig per «Du», ausser jemand siezt dich explizit). Halte deine gesprochenen Antworten im Call kurz und prägnant (1 bis 3 Sätze).",
+          "STRIKTE SCHREIB-REGEL (SCHRIFTLICH AUSNAHMSLOS ECHTES SCHRIFTDEUTSCH): Alles, was du schriftlich verfasst – insbesondere Nachrichten im Google-Meet-Chat (send_chat_message) sowie Titel und Stichpunkte auf Info-Karten (show_info_card) – MUSS AUSNAHMSLOS in korrektem, sauberem Schweizer Schriftdeutsch (Hochdeutsch mit «ss» statt «ß») geschrieben werden, selbst wenn du gerade mündlich im Dialekt sprichst!",
           "GOLDENE MEETING-REGEL (WAKE-WORD «NORA»): Du hörst das Gespräch aller Teilnehmenden im Raum mit. Wenn sich die Teilnehmenden untereinander unterhalten und dich NICHT mit «Nora» ansprechen, bleibst du KOMPLETT STILL (gib keinen einzigen Ton aus!). Antworte oder handle NUR DANN, wenn dich jemand mit «Nora» anspricht oder dir eine direkte Anweisung gibt!",
-          "DEINE WERKZEUGE IM CALL:",
-          "1. Wenn jemand sagt «Nora, schreib/post den Link von ... in den Chat» oder «Nora, kannst du ... aufschreiben?», rufe SOFORT das Tool send_chat_message auf (immer in sauberem Schriftdeutsch).",
-          "2. Wenn jemand sagt «Nora, öffne/zeig mal die Website ...», rufe SOFORT das Tool open_website_on_screen auf.",
-          "3. Wenn jemand sagt «Nora, zeig unsere Punkte/Zusammenfassung auf dem Bildschirm», rufe show_info_card auf (immer in sauberem Schriftdeutsch).",
-          "4. Wenn jemand sagt «Nora, du kannst das Fenster/die Website wieder schliessen», rufe close_screen_view auf.",
+          "DEINE 5 WERKZEUGE IM CALL:",
+          "1. send_chat_message: Wenn jemand sagt «Nora, schreib/post den Link von ... in den Chat» oder «Nora, kannst du ... in den Chat schreiben?», rufe SOFORT send_chat_message auf (immer in sauberem Schriftdeutsch).",
+          "2. open_website_on_screen: Wenn jemand sagt «Nora, öffne/zeig mal die Website ...», rufe SOFORT open_website_on_screen auf.",
+          "3. show_info_card: Wenn jemand sagt «Nora, zeig unsere Punkte/Zusammenfassung auf dem Bildschirm», rufe show_info_card auf (immer in sauberem Schriftdeutsch).",
+          "4. close_screen_view: Wenn jemand sagt «Nora, schliesse das Fenster / die Website wieder», rufe close_screen_view auf.",
+          "5. switch_to_standard_mode: Wenn jemand sagt «Nora, wechsle in den Standardmodus», «Nora, geh zurück in den normalen Modus», «Nora, schalte den Live-Modus aus» oder «Nora, mach nur noch Notizen im Hintergrund», rufe SOFORT das Tool switch_to_standard_mode auf und verabschiede dich mit einem kurzen Satz in den ruhigen Standard-Notizmodus.",
           BRIEFING ? ("Kontext zu diesem Meeting: " + BRIEFING) : ""
         ].filter(Boolean).join("\n");
 
-        ws.send(JSON.stringify({
-          setup: {
-            model: "models/gemini-2.5-flash-native-audio-latest",
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName: VOICE_NAME
-                  }
+        const setupPayload = {
+          model: "models/gemini-2.5-flash-native-audio-latest",
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: VOICE_NAME
                 }
               }
-            },
-            tools: [
-              { googleSearch: {} },
-              {
-                functionDeclarations: [
-                  {
-                    name: "send_chat_message",
-                    description: "Schreibt eine Nachricht oder einen Link (URL) direkt in den Google-Meet-Chat für alle Teilnehmenden.",
-                    parameters: {
-                      type: "OBJECT",
-                      properties: {
-                        message: { type: "STRING", description: "Der Text oder die vollständige https:// URL für den Google-Meet-Chat." }
-                      },
-                      required: ["message"]
-                    }
-                  },
-                  {
-                    name: "open_website_on_screen",
-                    description: "Öffnet eine Website live auf Noras Kamera-Bildschirm im Google-Meet-Call und teilt den Link im Chat.",
-                    parameters: {
-                      type: "OBJECT",
-                      properties: {
-                        url: { type: "STRING", description: "Die https:// URL der Website (z.B. https://www.insign.ch oder https://www.swissconomy.ch)" },
-                        title: { type: "STRING", description: "Kurzer Titel der Website" }
-                      },
-                      required: ["url"]
-                    }
-                  },
-                  {
-                    name: "show_info_card",
-                    description: "Zeigt eine strukturierte Info- oder Zusammenfassungs-Karte mit Bulletpoints live auf Noras Bildschirm im Call an.",
-                    parameters: {
-                      type: "OBJECT",
-                      properties: {
-                        title: { type: "STRING", description: "Überschrift der Karte" },
-                        items: { type: "ARRAY", items: { type: "STRING" }, description: "Liste der Stichpunkte" }
-                      },
-                      required: ["title", "items"]
-                    }
-                  },
-                  {
-                    name: "close_screen_view",
-                    description: "Schliesst die geöffnete Website oder Info-Karte und kehrt zur Vollbild-Avatar-Ansicht zurück.",
-                    parameters: {
-                      type: "OBJECT",
-                      properties: {}
-                    }
-                  }
-                ]
-              }
-            ],
-            systemInstruction: {
-              parts: [{ text: sysText }]
             }
+          },
+          tools: [
+            { googleSearch: {} },
+            {
+              functionDeclarations: [
+                {
+                  name: "send_chat_message",
+                  description: "Schreibt eine Nachricht oder einen Link (URL) direkt in den Google-Meet-Chat für alle Teilnehmenden (immer in Schriftdeutsch).",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      message: { type: "STRING", description: "Der Text (in Schriftdeutsch) oder die vollständige https:// URL für den Google-Meet-Chat." }
+                    },
+                    required: ["message"]
+                  }
+                },
+                {
+                  name: "open_website_on_screen",
+                  description: "Öffnet eine Website live auf Noras Kamera-Bildschirm im Google-Meet-Call und teilt den Link im Chat.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      url: { type: "STRING", description: "Die https:// URL der Website (z.B. https://www.insign.ch oder https://www.swissconomy.ch)" },
+                      title: { type: "STRING", description: "Kurzer Titel der Website" }
+                    },
+                    required: ["url"]
+                  }
+                },
+                {
+                  name: "show_info_card",
+                  description: "Zeigt eine strukturierte Info- oder Zusammenfassungs-Karte mit Bulletpoints live auf Noras Bildschirm im Call an (immer in Schriftdeutsch).",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      title: { type: "STRING", description: "Überschrift der Karte in Schriftdeutsch" },
+                      items: { type: "ARRAY", items: { type: "STRING" }, description: "Liste der Stichpunkte in Schriftdeutsch" }
+                    },
+                    required: ["title", "items"]
+                  }
+                },
+                {
+                  name: "close_screen_view",
+                  description: "Schliesst die geöffnete Website oder Info-Karte und kehrt zur Vollbild-Avatar-Ansicht zurück.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {}
+                  }
+                },
+                {
+                  name: "switch_to_standard_mode",
+                  description: "Wechselt aus dem interaktiven Live-/Showcase-Modus zurück in den ruhigen, blauen Standard-Modus (reiner Notiz-Bot ohne Sprachausgabe).",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {}
+                  }
+                }
+              ]
+            }
+          ],
+          systemInstruction: {
+            parts: [{ text: sysText }]
           }
-        }));
+        };
+
+        if (useElevenLabs) {
+          setupPayload.outputAudioTranscription = {};
+        }
+
+        ws.send(JSON.stringify({ setup: setupPayload }));
       };
 
       ws.onmessage = async (event) => {
@@ -769,7 +848,7 @@
                 clientContent: {
                   turns: [{
                     role: "user",
-                    parts: [{ text: "Nora, du bist gerade dem Call beigetreten. Begrüsse alle kurz und herzlich auf Schweizer Hochdeutsch (1-2 Sätze, sag dass du Nora von IN-sain bist und gerne zuhörst oder auf Zuruf hilfst)." }]
+                    parts: [{ text: "Nora, du bist gerade im Live-Modus zugeschaltet worden. Begrüsse alle kurz, sanft und herzlich auf reinem Schriftdeutsch / Hochdeutsch (1-2 Sätze, sag dass du Nora von IN-sain im Live-Modus bist und gerne auf Zuruf hilfst)." }]
                   }],
                   turnComplete: true
                 }
@@ -795,6 +874,9 @@
             } else if (fc.name === "close_screen_view") {
               closeScreenView();
               responses.push({ id: fc.id, name: fc.name, response: { result: "Bildschirmansicht geschlossen." } });
+            } else if (fc.name === "switch_to_standard_mode") {
+              triggerSwitchToStandardMode();
+              responses.push({ id: fc.id, name: fc.name, response: { result: "Wechsel in den Standard-Modus wurde ausgelöst. Bestätige kurz in 1 Satz auf Schriftdeutsch, dass du jetzt in den ruhigen Standard-Modus wechselst." } });
             }
           }
           if (responses.length > 0) {
@@ -802,7 +884,16 @@
           }
         }
 
-        if (msg.serverContent?.modelTurn?.parts) {
+        if (useElevenLabs) {
+          if (msg.serverContent?.outputTranscription?.text) {
+            elevenTranscriptBuffer += msg.serverContent.outputTranscription.text;
+          }
+          if (msg.serverContent?.turnComplete && elevenTranscriptBuffer.trim()) {
+            const toSpeak = elevenTranscriptBuffer.trim();
+            elevenTranscriptBuffer = "";
+            speakWithElevenLabs(toSpeak);
+          }
+        } else if (msg.serverContent?.modelTurn?.parts) {
           for (const part of msg.serverContent.modelTurn.parts) {
             if (part.inlineData && part.inlineData.data) {
               enqueuePcm24kBase64(part.inlineData.data);
