@@ -518,7 +518,7 @@
 
   <div class="mode-pill">
     <span class="mode-dot"></span>
-    <span>⚡ Live-Modus · AI Meeting Agent (Interaktiv)</span>
+    <span>Live-Modus · AI Meeting Agent (Interaktiv)</span>
   </div>
 
   <div class="top-brand">
@@ -656,7 +656,7 @@
       };
       browserPreviewImgEl.src = renderUrl;
 
-      showToast("🌐 <strong>Geöffnet:</strong> " + cleanUrl, 10000);
+      showToast("<strong>Website geöffnet:</strong> " + cleanUrl, 10000);
       relayActionToHost({ type: "send_chat_message", message: cleanUrl });
     }
 
@@ -695,7 +695,7 @@
     function triggerSwitchToStandardMode() {
       if (pendingStandardSwitch) return;
       pendingStandardSwitch = true;
-      showToast("🔵 <strong>Modus-Wechsel:</strong> Wechsle in den Standard-Modus (Nur Notizen)...", 8000);
+      showToast("<strong>Modus-Wechsel:</strong> Wechsle in den Standard-Modus (Nur Notizen)...", 8000);
       relayActionToHost({ type: "switch_to_standard_mode" });
       const checkDone = setInterval(() => {
         if (!isNoraSpeaking() && (Date.now() - lastSpeakEndMs > 600)) {
@@ -1052,7 +1052,7 @@
           for (const fc of msg.toolCall.functionCalls) {
             const args = fc.args || {};
             if (fc.name === "send_chat_message") {
-              showToast("💬 <strong>Im Meet-Chat geteilt:</strong> " + (args.message || ""), 10000);
+              showToast("<strong>Im Meet-Chat geteilt:</strong> " + (args.message || ""), 10000);
               relayActionToHost({ type: "send_chat_message", message: args.message || "" });
               responses.push({ id: fc.id, name: fc.name, response: { result: "Nachricht wurde in den Google-Meet-Chat gesendet: " + args.message } });
             } else if (fc.name === "open_website_on_screen") {
