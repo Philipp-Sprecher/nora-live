@@ -357,17 +357,17 @@
     position: absolute;
     top: 0;
     left: 0;
-    transition: opacity 0.22s ease;
+  }
+
+  #video-idle {
+    z-index: 1;
+    opacity: 1;
   }
 
   #video-talking {
+    z-index: 2;
     opacity: 0;
-  }
-  body.speaking #video-talking {
-    opacity: 1;
-  }
-  body.speaking #video-idle {
-    opacity: 0;
+    transition: opacity 0.14s ease;
   }
 
   .wave-pill {
@@ -551,7 +551,7 @@
         <div class="avatar-pulse-halo"></div>
         <div class="avatar-circle">
           <video id="video-idle" src="https://philipp-sprecher.github.io/nora-live/nora-idle-balanced.mp4?v=3" autoplay loop muted playsinline crossorigin="anonymous"></video>
-          <video id="video-talking" src="https://v3b.fal.media/files/b/0ab2da5f/WpUHmmNOIS134ULWFWoDV_nora-talking-loop.mp4" autoplay loop muted playsinline crossorigin="anonymous"></video>
+          <video id="video-talking" src="https://philipp-sprecher.github.io/nora-live/nora-talking-hq.mp4?v=1" autoplay loop muted playsinline crossorigin="anonymous"></video>
         </div>
         <div class="wave-pill">
           <div class="bar b1"></div>
@@ -709,30 +709,116 @@
       }, 5500);
     }
 
-    // --- Audio Playback Queue (24kHz PCM from Gemini Live or decoded MP3 from ElevenLabs) ---
+    // --- Audio Playback Queue & Real-Time 60fps Web Audio Lip-Sync Engine ---
     const playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    const voiceAnalyser = playCtx.createAnalyser();
+    voiceAnalyser.fftSize = 256;
+    voiceAnalyser.smoothingTimeConstant = 0.35;
+    voiceAnalyser.connect(playCtx.destination);
+    const timeDomainBuf = new Uint8Array(voiceAnalyser.fftSize);
+    const freqDomainBuf = new Uint8Array(voiceAnalyser.frequencyBinCount);
+
+    const videoIdleEl = document.getElementById("video-idle");
+    const videoTalkingEl = document.getElementById("video-talking");
+    const waveBarEls = Array.from(document.querySelectorAll(".wave-pill .bar"));
+
     let nextPlayTime = 0;
     let lastSpeakEndMs = 0;
     let elevenTranscriptBuffer = "";
+    let smoothedMouthLevel = 0;
+    let silentFrameCount = 0;
 
     function isNoraSpeaking() {
       return playCtx.currentTime < nextPlayTime - 0.02;
     }
 
-    setInterval(() => {
+    function updateLipSyncFrame() {
+      requestAnimationFrame(updateLipSyncFrame);
+
       if (isNoraSpeaking()) {
         if (!document.body.classList.contains("speaking")) {
           document.body.classList.add("speaking");
           badgeEl.textContent = "Live-Modus · Nora spricht";
+          if (videoTalkingEl) {
+            videoTalkingEl.currentTime = 0.08;
+            videoTalkingEl.play().catch(() => {});
+          }
         }
         lastSpeakEndMs = Date.now();
+
+        voiceAnalyser.getByteTimeDomainData(timeDomainBuf);
+        voiceAnalyser.getByteFrequencyData(freqDomainBuf);
+
+        // Compute instantaneous RMS amplitude from time-domain waveform
+        let sumSq = 0;
+        for (let i = 0; i < timeDomainBuf.length; i++) {
+          const centered = (timeDomainBuf[i] - 128) / 128;
+          sumSq += centered * centered;
+        }
+        const rms = Math.sqrt(sumSq / timeDomainBuf.length);
+
+        // Compute speech formant energy (bins 2..32 @ 24kHz/256 ≈ 180Hz..3000Hz)
+        let formantSum = 0;
+        for (let b = 2; b <= 32; b++) {
+          formantSum += freqDomainBuf[b];
+        }
+        const formantAvg = (formantSum / 31) / 255;
+
+        // Combine RMS and speech formant energy into target mouth openness [0..1]
+        const rawActivity = Math.max(rms * 4.2, formantAvg * 1.9);
+        const targetMouth = rawActivity < 0.05 ? 0 : Math.min(1, (rawActivity - 0.05) * 2.4);
+
+        if (targetMouth > smoothedMouthLevel) {
+          smoothedMouthLevel = smoothedMouthLevel * 0.38 + targetMouth * 0.62;
+        } else {
+          smoothedMouthLevel = smoothedMouthLevel * 0.72 + targetMouth * 0.28;
+        }
+
+        if (rawActivity < 0.045) {
+          silentFrameCount++;
+        } else {
+          silentFrameCount = 0;
+        }
+
+        if (videoTalkingEl) {
+          if (silentFrameCount > 10) {
+            // Pause > 160ms between clauses/sentences: close mouth smoothly to idle smile
+            videoTalkingEl.style.opacity = "0";
+            videoTalkingEl.playbackRate = 0.35;
+          } else if (silentFrameCount > 2) {
+            // Brief inter-word gap: freeze/slow lip movement so mouth doesn't flap in silence
+            videoTalkingEl.style.opacity = "1";
+            videoTalkingEl.playbackRate = 0.22;
+          } else {
+            // Active syllable/vowel: modulate articulation speed with real-time voice energy
+            videoTalkingEl.style.opacity = "1";
+            const rate = 0.78 + Math.min(0.58, smoothedMouthLevel * 0.62);
+            videoTalkingEl.playbackRate = Number(rate.toFixed(2));
+          }
+        }
+
+        // Drive equalizer bars from real voice spectrum
+        for (let i = 0; i < waveBarEls.length; i++) {
+          const binIdx = 3 + i * 4;
+          const val = (freqDomainBuf[binIdx] || 0) / 255;
+          const scale = 0.45 + val * 1.35;
+          waveBarEls[i].style.transform = "scaleY(" + scale.toFixed(2) + ")";
+        }
       } else {
         if (document.body.classList.contains("speaking")) {
           document.body.classList.remove("speaking");
           badgeEl.textContent = "Live-Modus · Bereit auf Zuruf";
+          waveBarEls.forEach((b) => { b.style.transform = ""; });
+        }
+        silentFrameCount = 0;
+        smoothedMouthLevel = 0;
+        if (videoTalkingEl) {
+          videoTalkingEl.style.opacity = "0";
+          videoTalkingEl.playbackRate = 1.0;
         }
       }
-    }, 80);
+    }
+    requestAnimationFrame(updateLipSyncFrame);
 
     function enqueuePcm24kBase64(b64) {
       const bin = atob(b64);
@@ -750,7 +836,7 @@
 
       const src = playCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(playCtx.destination);
+      src.connect(voiceAnalyser);
 
       const startAt = Math.max(playCtx.currentTime + 0.02, nextPlayTime);
       src.start(startAt);
@@ -786,7 +872,7 @@
           const audioBuf = await playCtx.decodeAudioData(arrBuf);
           const src = playCtx.createBufferSource();
           src.buffer = audioBuf;
-          src.connect(playCtx.destination);
+          src.connect(voiceAnalyser);
           const startAt = Math.max(playCtx.currentTime + 0.02, nextPlayTime);
           src.start(startAt);
           nextPlayTime = startAt + audioBuf.duration;
