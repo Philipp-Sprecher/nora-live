@@ -612,7 +612,7 @@
     }
 
     async function relayActionToHost(actionObj) {
-      if (!GIST_ID || !GH_TOKEN) return;
+      if (!GIST_ID || !GH_TOKEN) return null;
       try {
         await fetch("https://api.github.com/gists/" + GIST_ID, {
           method: "PATCH",
@@ -632,6 +632,42 @@
       } catch (e) {
         console.error("Relay error:", e);
       }
+      return null;
+    }
+
+    async function relayRequestToHost(actionObj, timeoutMs = 8500) {
+      if (!GIST_ID || !GH_TOKEN) {
+        return { ok: false, error: "Relay nicht konfiguriert." };
+      }
+      const reqId = "req_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+      await relayActionToHost({ ...actionObj, reqId });
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 850));
+        try {
+          const res = await fetch("https://api.github.com/gists/" + GIST_ID + "?t=" + Date.now(), {
+            headers: {
+              Authorization: "Bearer " + GH_TOKEN,
+              Accept: "application/vnd.github+json",
+              "Cache-Control": "no-cache"
+            },
+            cache: "no-store"
+          });
+          if (res.ok) {
+            const gData = await res.json();
+            const rawResp = gData.files && gData.files["response.json"] && gData.files["response.json"].content;
+            if (rawResp) {
+              const parsed = JSON.parse(rawResp);
+              if (parsed && parsed.reqId === reqId) {
+                return parsed;
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Relay poll error:", err);
+        }
+      }
+      return { ok: false, error: "Zeitüberschreitung beim Abrufen der Host-Antwort." };
     }
 
     function openWebsiteOnScreen(url, title) {
@@ -658,6 +694,21 @@
 
       showToast("<strong>Website geöffnet:</strong> " + cleanUrl, 10000);
       relayActionToHost({ type: "send_chat_message", message: cleanUrl });
+    }
+
+    function startScreenshare(url, title) {
+      let cleanUrl = String(url || "").trim();
+      if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+        cleanUrl = "https://" + cleanUrl;
+      }
+      openWebsiteOnScreen(cleanUrl, title);
+      showToast("<strong>Vollbild-Präsentation gestartet:</strong> " + cleanUrl, 10000);
+      relayActionToHost({ type: "start_screenshare", url: cleanUrl, postToChat: false });
+    }
+
+    function stopScreenshare() {
+      showToast("<strong>Bildschirmpräsentation beendet</strong>", 6000);
+      relayActionToHost({ type: "stop_screenshare" });
     }
 
     function scrollWebsiteOnScreen(direction) {
@@ -689,6 +740,7 @@
       document.body.classList.remove("split-view");
       browserPreviewImgEl.src = "";
       browserPreviewImgEl.style.display = "none";
+      relayActionToHost({ type: "stop_screenshare" });
     }
 
     let pendingStandardSwitch = false;
@@ -707,6 +759,14 @@
         clearInterval(checkDone);
         window.location.href = "https://philipp-sprecher.github.io/nora-live/standard.html";
       }, 5500);
+    }
+
+    let pendingLeaveMeeting = false;
+    function triggerLeaveMeeting(farewellChatMessage) {
+      if (pendingLeaveMeeting) return;
+      pendingLeaveMeeting = true;
+      showToast("<strong>Auf Wiedersehen:</strong> Nora verlässt das Meeting...", 8000);
+      relayActionToHost({ type: "leave_meeting", message: farewellChatMessage || "" });
     }
 
     // --- Audio Playback Queue & Real-Time 60fps Web Audio Lip-Sync Engine ---
@@ -919,13 +979,18 @@
           "- Sprich stets mit einer sanften, warmen, ruhigen und angenehmen Stimme (standardmässig per «Du», ausser jemand siezt dich explizit). Halte deine gesprochenen Antworten im Call kurz und prägnant (1 bis 3 Sätze).",
           "STRIKTE SCHREIB-REGEL (KEIN GESCHRIEBENER DIALEKT): Du schreibst NIEMALS im Schweizer Dialekt! Alles, was du auf Deutsch schriftlich verfasst – insbesondere Nachrichten im Google-Meet-Chat (send_chat_message) sowie Titel und Stichpunkte auf Info-Karten (show_info_card) – MUSS in korrektem, sauberem Schweizer Schriftdeutsch (Hochdeutsch mit «ss» statt «ß») geschrieben werden, selbst wenn du gerade mündlich im Dialekt sprichst! (Nur wenn du explizit auf Englisch angesprochen oder um englische Notizen gebeten wirst, darfst du auf Englisch schreiben.)",
           "GOLDENE MEETING-REGEL (WAKE-WORD «NORA»): Du hörst das Gespräch aller Teilnehmenden im Raum mit. Wenn sich die Teilnehmenden untereinander unterhalten und dich NICHT mit «Nora» ansprechen, bleibst du KOMPLETT STILL (gib keinen einzigen Ton aus!). Antworte oder handle NUR DANN, wenn dich jemand mit «Nora» anspricht oder dir eine direkte Anweisung gibt!",
-          "DEINE 6 WERKZEUGE IM CALL:",
+          "DEINE 11 WERKZEUGE IM CALL:",
           "1. send_chat_message: Wenn jemand sagt «Nora, schreib/post den Link von ... in den Chat» oder «Nora, kannst du ... in den Chat schreiben?», rufe SOFORT send_chat_message auf (immer in sauberem Schriftdeutsch).",
           "2. open_website_on_screen: Wenn jemand sagt «Nora, öffne/zeig mal die Website ...», rufe SOFORT open_website_on_screen auf.",
-          "3. scroll_website: Wenn jemand sagt «Nora, scroll auf der Website etwas nach unten / nach oben», rufe scroll_website auf.",
-          "4. show_info_card: Wenn jemand sagt «Nora, zeig unsere Punkte/Zusammenfassung auf dem Bildschirm», rufe show_info_card auf (immer in sauberem Schriftdeutsch).",
-          "5. close_screen_view: Wenn jemand sagt «Nora, schliesse das Fenster / die Website wieder», rufe close_screen_view auf.",
-          "6. switch_to_standard_mode: Wenn jemand sagt «Nora, wechsle in den Standardmodus», «Nora, geh zurück in den normalen Modus», «Nora, schalte den Live-Modus aus» oder «Nora, mach nur noch Notizen im Hintergrund», rufe SOFORT das Tool switch_to_standard_mode auf und verabschiede dich mit einem kurzen Satz in den ruhigen Standard-Notizmodus.",
+          "3. start_screenshare: Wenn jemand sagt «Nora, teile die Website / deinen Bildschirm gross als Bildschirmpräsentation» oder «Präsentiere ... im Vollbild», rufe start_screenshare auf.",
+          "4. stop_screenshare: Wenn jemand sagt «Nora, beende die Bildschirmpräsentation», rufe stop_screenshare auf.",
+          "5. scroll_website: Wenn jemand sagt «Nora, scroll auf der Website etwas nach unten / nach oben», rufe scroll_website auf.",
+          "6. show_info_card: Wenn jemand sagt «Nora, zeig unsere Punkte/Zusammenfassung auf dem Bildschirm», rufe show_info_card auf (immer in sauberem Schriftdeutsch).",
+          "7. close_screen_view: Wenn jemand sagt «Nora, schliesse das Fenster / die Website wieder», rufe close_screen_view auf.",
+          "8. check_calendar_availability: Wenn jemand fragt «Nora, wann hat Philipp nächste Woche / am Dienstag frei?» oder «Schau mal in meinen Kalender für einen Folgetermin», rufe check_calendar_availability auf, lies die freien Slots kurz vor und zeige sie auf der Info-Karte.",
+          "9. create_clickup_task: Wenn jemand sagt «Nora, erstell bitte einen ClickUp-Task / ein Todo ...» (optional mit Person wie Bachi/Philipp/Angie, Fälligkeitsdatum, Aufwandsschätzung in Stunden oder Liste/Kunde), rufe create_clickup_task auf.",
+          "10. lookup_clickup_task: Wenn jemand fragt «Nora, wie ist der Status / die Schätzung bei ClickUp-Task oder SLA-Ticket ...?», rufe lookup_clickup_task auf.",
+          "11. switch_to_standard_mode / leave_meeting: Wenn jemand sagt «Nora, wechsle in den Standardmodus» (nur noch ruhig Notizen machen), rufe switch_to_standard_mode auf. Wenn jemand sagt «Nora, du kannst das Meeting ganz verlassen / aus dem Call gehen», rufe leave_meeting auf und verabschiede dich kurz.",
           BRIEFING ? ("Kontext zu diesem Meeting: " + BRIEFING) : ""
         ].filter(Boolean).join("\n");
 
@@ -958,7 +1023,7 @@
                 },
                 {
                   name: "open_website_on_screen",
-                  description: "Öffnet eine Website live auf Noras Kamera-Bildschirm im Google-Meet-Call und teilt den Link im Chat.",
+                  description: "Öffnet eine Website live auf Noras Kamera-Bildschirm im Split-Screen und teilt den Link im Chat.",
                   parameters: {
                     type: "OBJECT",
                     properties: {
@@ -966,6 +1031,26 @@
                       title: { type: "STRING", description: "Kurzer Titel der Website" }
                     },
                     required: ["url"]
+                  }
+                },
+                {
+                  name: "start_screenshare",
+                  description: "Startet eine echte Vollbild-Bildschirmpräsentation (Google Meet Screenshare) einer Website zusätzlich zu Noras Kamerabild.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      url: { type: "STRING", description: "Die https:// URL der zu präsentierenden Website" },
+                      title: { type: "STRING", description: "Kurzer Titel der präsentierten Seite" }
+                    },
+                    required: ["url"]
+                  }
+                },
+                {
+                  name: "stop_screenshare",
+                  description: "Beendet die aktive Google-Meet-Bildschirmpräsentation (Screenshare), während Noras Kamera aktiv bleibt.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {}
                   }
                 },
                 {
@@ -1000,11 +1085,61 @@
                   }
                 },
                 {
+                  name: "check_calendar_availability",
+                  description: "Prüft live den Google Kalender von Philipp Sprecher auf freie Terminfenster für Folgetermine und zeigt sie auf dem Bildschirm sowie optional im Chat an.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      daysAhead: { type: "NUMBER", description: "Anzahl Tage im Voraus (Standard: 7, max: 14)" },
+                      queryDay: { type: "STRING", description: "Optionaler Wochentag oder Datum (z.B. 'Dienstag', 'Donnerstag', 'morgen')" },
+                      postToChat: { type: "BOOLEAN", description: "Ob die freien Termine inkl. TidyCal-Buchungslink auch in den Google-Meet-Chat gepostet werden sollen (Standard: true)" }
+                    }
+                  }
+                },
+                {
+                  name: "create_clickup_task",
+                  description: "Erstellt live während des Meetings einen neuen Task in ClickUp (Workspace insign) inkl. Zuweisung, Fälligkeitsdatum, optionalem Everhour-Estimate und teilt den Task-Link im Google-Meet-Chat.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      title: { type: "STRING", description: "Prägnanter Titel des ClickUp-Tasks (in Schriftdeutsch)" },
+                      description: { type: "STRING", description: "Optionale Beschreibung oder Kontext aus dem Meeting (in Schriftdeutsch)" },
+                      assigneeName: { type: "STRING", description: "Zuständige Person (z.B. 'Bachi', 'Philipp Sprecher', 'Angie', 'Dominic', 'Sujan', 'Felix')" },
+                      dueDate: { type: "STRING", description: "Optionales Fälligkeitsdatum (z.B. 'Freitag', 'morgen', '2026-11-27')" },
+                      estimateHours: { type: "NUMBER", description: "Optionale Aufwandsschätzung in Stunden für Everhour & ClickUp (z.B. 2 oder 4.5)" },
+                      listQuery: { type: "STRING", description: "Optionale Ziel-Liste oder Kunde (z.B. 'AJB', 'AoW', 'ZHAW', 'doodah', 'insign.ch', 'Blog', 'GL')" }
+                    },
+                    required: ["title"]
+                  }
+                },
+                {
+                  name: "lookup_clickup_task",
+                  description: "Sucht live in ClickUp (Workspace insign) nach einem Task oder SLA-Ticket und ruft Status, Zuständigkeit sowie Everhour-Schätzung ab.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      query: { type: "STRING", description: "Task-ID (z.B. 'SLA-1234') oder Suchbegriff" },
+                      postToChat: { type: "BOOLEAN", description: "Ob der Link zum gefundenen Task auch in den Meet-Chat gepostet werden soll" }
+                    },
+                    required: ["query"]
+                  }
+                },
+                {
                   name: "switch_to_standard_mode",
                   description: "Wechselt aus dem interaktiven Live-/Showcase-Modus zurück in den ruhigen, blauen Standard-Modus (reiner Notiz-Bot ohne Sprachausgabe).",
                   parameters: {
                     type: "OBJECT",
                     properties: {}
+                  }
+                },
+                {
+                  name: "leave_meeting",
+                  description: "Lässt Nora das Google-Meet-Gespräch auf Zuruf komplett beenden und den Call verlassen.",
+                  parameters: {
+                    type: "OBJECT",
+                    properties: {
+                      farewellChatMessage: { type: "STRING", description: "Optionale kurze Abschiedsnachricht im Chat (in Schriftdeutsch)" }
+                    }
                   }
                 }
               ]
@@ -1058,6 +1193,12 @@
             } else if (fc.name === "open_website_on_screen") {
               openWebsiteOnScreen(args.url, args.title);
               responses.push({ id: fc.id, name: fc.name, response: { result: "Website " + args.url + " ist jetzt live auf deinem Bildschirm sichtbar und der Link steht im Chat." } });
+            } else if (fc.name === "start_screenshare") {
+              startScreenshare(args.url, args.title);
+              responses.push({ id: fc.id, name: fc.name, response: { result: "Vollbild-Bildschirmpräsentation (Screenshare) für " + args.url + " wurde in Google Meet gestartet." } });
+            } else if (fc.name === "stop_screenshare") {
+              stopScreenshare();
+              responses.push({ id: fc.id, name: fc.name, response: { result: "Bildschirmpräsentation wurde beendet." } });
             } else if (fc.name === "scroll_website") {
               scrollWebsiteOnScreen(args.direction);
               responses.push({ id: fc.id, name: fc.name, response: { result: "Website wurde gescrollt." } });
@@ -1067,9 +1208,97 @@
             } else if (fc.name === "close_screen_view") {
               closeScreenView();
               responses.push({ id: fc.id, name: fc.name, response: { result: "Bildschirmansicht geschlossen." } });
+            } else if (fc.name === "check_calendar_availability") {
+              showToast("<strong>Kalender-Check:</strong> Prüfe freie Termine von Philipp Sprecher…", 6000);
+              const calRes = await relayRequestToHost({
+                type: "check_calendar_availability",
+                daysAhead: args.daysAhead || 7,
+                queryDay: args.queryDay || "",
+                postToChat: args.postToChat !== false
+              });
+              if (calRes && calRes.ok && Array.isArray(calRes.freeSlots)) {
+                showInfoCard("Freie Terminfenster · Philipp Sprecher", [
+                  ...calRes.freeSlots.slice(0, 5),
+                  "Direktbuchung: " + (calRes.bookingUrl || "https://tidycal.com/sprecher/30min-online")
+                ]);
+                responses.push({
+                  id: fc.id,
+                  name: fc.name,
+                  response: {
+                    result: "Freie Terminfenster gefunden (und auf dem Bildschirm eingeblendet): " + calRes.freeSlots.join(" | ") + ". Buchungslink: " + calRes.bookingUrl
+                  }
+                });
+              } else {
+                responses.push({
+                  id: fc.id,
+                  name: fc.name,
+                  response: { result: "Kalender-Abfrage konnte aktuell nicht abgeschlossen werden: " + (calRes?.error || "Unbekannter Fehler") }
+                });
+              }
+            } else if (fc.name === "create_clickup_task") {
+              showToast("<strong>ClickUp:</strong> Erstelle Task «" + (args.title || "") + "»…", 8000);
+              const cuRes = await relayRequestToHost({
+                type: "create_clickup_task",
+                title: args.title || "",
+                description: args.description || "",
+                assigneeName: args.assigneeName || "",
+                dueDate: args.dueDate || "",
+                estimateHours: args.estimateHours || 0,
+                listQuery: args.listQuery || ""
+              });
+              if (cuRes && cuRes.ok && cuRes.task) {
+                const t = cuRes.task;
+                showInfoCard("ClickUp-Task erstellt", [
+                  "Titel: " + t.name,
+                  "Liste: " + t.listName,
+                  "Zuständig: " + t.assignee,
+                  "Fälligkeit: " + t.dueDateStr + (t.estimateHours ? (" · Estimate: " + t.estimateHours) : ""),
+                  "Link im Google-Meet-Chat geteilt"
+                ]);
+                responses.push({
+                  id: fc.id,
+                  name: fc.name,
+                  response: {
+                    result: "ClickUp-Task erfolgreich angelegt: '" + t.name + "' in Liste '" + t.listName + "' (Zuständig: " + t.assignee + ", URL: " + t.url + "). Der Link steht im Chat."
+                  }
+                });
+              } else {
+                responses.push({
+                  id: fc.id,
+                  name: fc.name,
+                  response: { result: "Fehler beim Erstellen des ClickUp-Tasks: " + (cuRes?.error || "Unbekannter Fehler") }
+                });
+              }
+            } else if (fc.name === "lookup_clickup_task") {
+              showToast("<strong>ClickUp-Suche:</strong> «" + (args.query || "") + "»…", 6000);
+              const lkRes = await relayRequestToHost({
+                type: "lookup_clickup_task",
+                query: args.query || "",
+                postToChat: Boolean(args.postToChat)
+              });
+              if (lkRes && lkRes.ok && Array.isArray(lkRes.tasks) && lkRes.tasks.length > 0) {
+                const items = lkRes.tasks.map((t) =>
+                  "[" + t.customId + "] " + t.name + " — Status: " + t.status + " · Zuständig: " + t.assignees + " · Estimate: " + t.estimateHours + " (Gebucht: " + t.loggedHours + ")"
+                );
+                showInfoCard("ClickUp-Status: " + (args.query || ""), items);
+                responses.push({
+                  id: fc.id,
+                  name: fc.name,
+                  response: { result: "Gefundene ClickUp-Tasks: " + items.join(" || ") }
+                });
+              } else {
+                responses.push({
+                  id: fc.id,
+                  name: fc.name,
+                  response: { result: "Kein passender ClickUp-Task für '" + (args.query || "") + "' gefunden." }
+                });
+              }
             } else if (fc.name === "switch_to_standard_mode") {
               triggerSwitchToStandardMode();
               responses.push({ id: fc.id, name: fc.name, response: { result: "Wechsel in den Standard-Modus wurde ausgelöst. Bestätige kurz in 1 Satz auf Schriftdeutsch, dass du jetzt in den ruhigen Standard-Modus wechselst." } });
+            } else if (fc.name === "leave_meeting") {
+              triggerLeaveMeeting(args.farewellChatMessage || "");
+              responses.push({ id: fc.id, name: fc.name, response: { result: "Verlassen des Meetings ausgelöst. Verabschiede dich jetzt herzlich in 1 kurzen Satz auf Schriftdeutsch aus dem Call." } });
             }
           }
           if (responses.length > 0) {
